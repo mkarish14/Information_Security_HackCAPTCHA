@@ -1,0 +1,144 @@
+# train_and_test.py
+import glob
+import cv2,cv
+import operator
+import os
+import numpy as np
+from os import listdir
+from cv2 import CV_WINDOW_AUTOSIZE
+# VARIABLE DECLARATION #
+MINIMUM_CONTOUR_AREA = 40
+RESIZE_IMG_WTH = 20
+RESIZE_IMG_HGT = 30
+
+class ConData():
+
+    # variables #######################
+    integerRectangeX = 0                # bounding rect top left corner x location
+    integerRectangeY = 0                # bounding rect top left corner y location
+    npcont = None           		# contour
+    boundRect = None         		# bounding rect for contour
+    contArea = 0.0               		# area of contour
+    intRectangeWth = 0            		# bounding rect width
+    intRectangeHth = 0           		# bounding rect height
+    
+
+	
+    def calcTopLeftWthAndHth(self):               # calculate bounding rect info
+		[integerX, integerY, integerWth, integerHth] = self.boundRect
+		self.integerRectangeX = integerX
+		self.integerRectangeY = integerY
+		self.intRectangeWth = integerWth
+		self.intRectangeHth = integerHth 
+
+    def isValidContour(self):                            			 # this is oversimplified, for a production grade program
+        if self.contArea < MINIMUM_CONTOUR_AREA: return False        # much better validity checking would be necessary
+        return True
+
+def calculation(Result,test_labels):
+	CorrectAns = np.count_nonzero(Result == test_labels)
+    
+	Accurate = CorrectAns*100.0/1048
+	print str(Accurate)+"%"
+	return str(Accurate)+"%"
+
+    
+def train_and_test(dir):
+    correctContData = []              # we will fill these shortly
+    allContData = []                # declare empty lists,
+	
+    npClassify = np.loadtxt("label.txt", np.float32)                  # read in training classifications
+    npFlatImage = np.loadtxt("image_arr.txt", np.float32)                 # read in training images
+    npClassify = npClassify.reshape((npClassify.size, 1))       # reshape numpy array to 1d, necessary to pass to call to train
+    kNearest = cv2.KNearest()                   # instantiate KNN object
+    kNearest.train(npFlatImage, npClassify)          # train KNN object
+    imgTestAlphabets = cv2.imread(dir)          # read in testing numbers image
+     
+    if imgTestAlphabets is None:                           # if image was not read successfully
+        print "error in reading image from file \n\n"        # print error message to std out
+        os.system("pause")                                  # pause so user can see error message
+        return                                              # and exit function (which exits program)
+    # end if
+ 
+    imageGray = cv2.cvtColor(imgTestAlphabets, cv2.COLOR_BGR2GRAY)       # get grayscale image
+    imageBlurr = cv2.GaussianBlur(imageGray, (5,5), 0)                    # blur
+    imageThreshold = cv2.adaptiveThreshold(imageBlurr,                           # input image
+                                      255,                                  # make pixels that pass the threshold full white
+                                      cv2.ADAPTIVE_THRESH_GAUSSIAN_C,       # use gaussian rather than mean, seems to give better results
+                                      cv2.THRESH_BINARY_INV,                # invert so foreground will be white, background will be black
+                                      11,                                   # size of a pixel neighborhood used to calculate threshold value
+                                      2)                                    # constant subtracted from the mean or weighted mean
+    imageThresholdCopy = imageThreshold.copy()                                        # make a copy of the thresh image, this in necessary b/c findContours modifies the image
+   
+    npContour, npHier = cv2.findContours(imageThresholdCopy,             # input image, make sure to use a copy since the function will modify this image in the course of finding contours
+                                                 cv2.RETR_EXTERNAL,         # retrieve the outermost contours only
+                                                 cv2.CHAIN_APPROX_SIMPLE)   # compress horizontal, vertical, and diagonal segments and leave only their end points
+     
+    for npcont in npContour:                             # for each contour
+        contWithData = ConData()                                             # instantiate a contour with data object
+        contWithData.npcont = npcont                                         # assign contour to contour with data
+        contWithData.boundRect = cv2.boundingRect(contWithData.npcont)     # get the bounding rect
+        contWithData.calcTopLeftWthAndHth()                    # get bounding rect info
+        contWithData.contArea = cv2.contourArea(contWithData.npcont)           # calculate the contour area
+        allContData.append(contWithData)                                     # add contour with data object to list of all contours with data
+    # end for
+
+    
+    for contWithData in allContData:                 # for all contours
+        if contWithData.isValidContour():             # check if valid
+            correctContData.append(contWithData)       # if so, append to valid contour list
+        # end if
+    # end for
+
+    strFinalString = ""         # declare final string, this will have the final number sequence by the end of the program
+    s=[]
+    prob=[]
+    for contWithData in correctContData:            # for each contour
+                                                # draw a green rect around the current char
+        cv2.rectangle(imgTestAlphabets,                                        # draw rectangle on original testing image
+                      (contWithData.integerRectangeX, contWithData.integerRectangeY),     # upper left corner
+                      (contWithData.integerRectangeX + contWithData.intRectangeWth, contWithData.integerRectangeY + contWithData.intRectangeHth),      # lower right corner
+                      (0, 255, 0),              # green
+                      2)                        # thickness
+        imageROI = imageThreshold[contWithData.integerRectangeY : contWithData.integerRectangeY + contWithData.intRectangeHth,     # crop char out of threshold image
+                           contWithData.integerRectangeX : contWithData.integerRectangeX + contWithData.intRectangeWth]
+        imageROIResize = cv2.resize(imageROI, (RESIZE_IMG_WTH, RESIZE_IMG_HGT))             # resize image, this will be more consistent for recognition and storage
+        npROIResize = imageROIResize.reshape((1, RESIZE_IMG_WTH * RESIZE_IMG_HGT))      # flatten image into 1d numpy array
+        npROIResize = np.float32(npROIResize)       # convert from 1d numpy array of ints to 1d numpy array of floats        
+        RetrieveVal, npResult, neighbours, distances = kNearest.find_nearest(npROIResize, k = 1)     # call KNN function find_nearest
+   
+        #calculator probability
+        prob.append(chr(npResult[0][0])+":"+calculation(npResult, npClassify))
+    
+        strCurrChar = str(int(npResult[0][0]))                                             # get character from results
+        s.append(chr(npResult[0][0]))
+        
+        font = cv2.FONT_HERSHEY_COMPLEX_SMALL
+        if contWithData.integerRectangeY < 40:
+            cv2.putText(imgTestAlphabets,chr(npResult[0][0]), (contWithData.integerRectangeX, contWithData.integerRectangeY + 45), font, 1.2, 255)
+        else:
+            cv2.putText(imgTestAlphabets,chr(npResult[0][0]), (contWithData.integerRectangeX, contWithData.integerRectangeY - 20), font, 1.2, 255)
+
+        strFinalString = strFinalString + strCurrChar            # append current char to full string
+    
+    # end for
+
+    print s
+    #cv2.cv.NamedWindow("imgTestAlphabets",flags=cv2.cv.CV_WINDOW_NORMAL)
+    #cv2.cv.ResizeWindow("imgTestAlphabets", 200, 200) 
+    #cv2.imshow("imgTestAlphabets", imgTestAlphabets)      # show input image with green boxes drawn around found digits
+    cv2.imwrite("image_result.png", imgTestAlphabets)
+    cv2.waitKey(0)                                          # wait for user key press
+    cv2.destroyAllWindows()             # remove windows from memory
+	
+    return prob
+
+
+
+
+
+
+
+
+
+
